@@ -58,8 +58,8 @@ Contract:
 
 Do not call goal_complete until: latest fresh reviewer has no valid requests; Codex/chatgpt-codex-connector conversations were inspected and no valid concern remains unresolved; fixes are committed/pushed; comments use real Markdown newlines via --body-file with no literal \\n; Spanish replies were posted directly on original Codex/chatgpt-codex-connector comments/threads for addressed valid concerns; conflicts are resolved/pushed, especially if no checks appeared; PR still targets develop/dev; latest-head CI/checks are green with no bad/pending/queued/in_progress; validation evidence was checked.`;
 
-  if (objective.length > 4000) {
-    throw new Error("Generated /goal objective exceeds 4000 characters.");
+  if (objective.length > 8000) {
+    throw new Error("Generated /goal objective exceeds 8000 characters.");
   }
 
   return objective;
