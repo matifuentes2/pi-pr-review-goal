@@ -1,0 +1,13 @@
+{
+  "name": "pi-pr-review-goal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi extension that starts an automated PR review/fix goal loop.",
+  "keywords": ["pi-package", "pi-extension"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}
