@@ -40,7 +40,6 @@ Contract:
 - Preflight: base ${baseRefName}, head ${initialHeadRefOid}; before completion, confirm base is still develop/dev and use latest head SHA.
 - Use gh for PR operations, e.g. gh pr view ${prNumber}, gh pr checkout ${prNumber}, comments, pushes, and metadata.
 - Parent agent owns orchestration and loop decisions. Use pi-subagents with a fresh-context reviewer subagent each review round.
-- Reviewer model reasoning rule: when the reviewer subagent would use an OpenAI/GPT model, force low reasoning effort for that reviewer by passing an explicit low-thinking model suffix (for example, use the effective GPT model as <provider>/<model>:low). Do not let GPT reviewer runs inherit or request high reasoning effort. For non-GPT reviewer models, keep the normal reviewer defaults.
 - Inspect PR review comments/conversations from chatgpt-codex-connector/Codex if present via gh/gh api, including review threads and issue comments. Valid evidence-backed Codex concerns are required fixes.
 - For every addressed chatgpt-codex-connector/Codex concern, identify the exact original GitHub comment/thread and reply directly to that comment/thread; do not satisfy it with only a new top-level PR comment.
 - Iterate at parent level: review, inspect Codex threads/comments, fix valid corrections, validate, commit, push, direct-reply/comment, then start a brand-new reviewer on the updated PR diff.
