@@ -1,6 +1,6 @@
 # pi-pr-review-goal
 
-Private Pi package providing the `/pr-review-goal` extension.
+A [Pi coding agent](https://github.com/earendil-works/pi) package providing the `/pr-review-goal` extension.
 
 ## Install
 
@@ -24,3 +24,11 @@ Example:
 ```bash
 /pr-review-goal 123 --base main
 ```
+
+## Operational safety
+
+The generated goal can use the caller's local Git and GitHub credentials to check out branches, modify code, commit, push, and post PR comments. Run it only in repositories where those automated changes are intended, review its output, and rely on branch protection and required CI checks for remote safeguards.
+
+## License
+
+MIT
