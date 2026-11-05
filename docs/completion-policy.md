@@ -14,8 +14,8 @@ Pi 1.5+ on PATH (on native Windows the host invokes its installed SDK CLI with N
 Restart/reload Pi after updating both packages. Updating only this package does
 not retrofit the policy boundary into an old companion.
 
-The companion work is linked from PR #1. Merge/deploy the companion before the
-consumer; until then the old installation intentionally stays fail-closed.
+The matching companion work is linked from `companion-ref.json`. Merge/deploy the
+companion before the consumer; until then the old installation intentionally stays fail-closed.
 
 ## Trust boundary and lifecycle
 
@@ -75,8 +75,8 @@ message, checks the exact provider/model, and persists the raw final output.
 Partial streams, failed/aborted/length-limited responses, missing final messages,
 nonzero exits, interrupted processes, timeout and output overflow cannot authorize
 completion. Setup/runtime failure pauses an active goal with attention instead of
-continuing indefinitely. A retry requires an explicitly chosen model; there is no
-automatic fallback. Temporary process directories are removed after termination.
+continuing indefinitely. Retries keep the already-bound model; choosing another
+requires a new goal, never automatic fallback. Temporary process directories are removed after termination.
 
 The model's final output must be exactly one JSON object:
 
