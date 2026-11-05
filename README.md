@@ -14,7 +14,9 @@ pi install git:github.com/matifuentes2/pi-pr-review-goal
 /pr-review-goal <pr-number> [--base <branch>]
 ```
 
-Starts a Codex-style PR review/fix/comment loop for a GitHub PR.
+Starts a Codex-style PR review/fix/comment loop for a GitHub PR **only with a completion-policy-capable `pi-codex-goal` host**.
+
+> **Currently blocked:** the inspected companion exposes only an objective-text start event, not an enforceable completion-policy API. This version refuses to start or replace a goal through that unsafe API. The policy evaluator and proposed adapter are implemented here, but the required companion completion-boundary and trusted reviewer-execution integration are not. See [the concrete blocker, proposed contract, and test limitations](docs/completion-policy.md). This is not an end-to-end reviewer-success gate release.
 
 - Without `--base`, the PR must target `develop` or `dev` (backward-compatible default).
 - With `--base <branch>` (or `-b <branch>` / `--base=<branch>`), the PR must target that branch exactly.
@@ -24,6 +26,10 @@ Example:
 ```bash
 /pr-review-goal 123 --base main
 ```
+
+## Validation
+
+Run `npm test` on Node 22.18+ or 24. Tests use the built-in test runner and no added dependencies. Mock adapter tests do not establish enforcement in the real companion.
 
 ## Operational safety
 

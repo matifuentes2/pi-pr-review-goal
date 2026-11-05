@@ -4,6 +4,9 @@
   "private": true,
   "description": "Pi extension that starts an automated PR review/fix goal loop.",
   "keywords": ["pi-package", "pi-extension"],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },

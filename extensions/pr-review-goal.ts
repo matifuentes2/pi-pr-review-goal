@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getGuardedHost, HOST_BLOCKER } from "../src/goal-host.ts";
+import { POLICY_ID } from "../src/review-policy.ts";
 
 // /pr-review-goal usage contract:
 // - Run from inside the target git repo: /pr-review-goal <pr-number> [--base <branch>]
@@ -7,9 +9,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 // - Requires gh, pi-subagents, and pi-codex-goal.
 // - The command starts a Codex-style goal with no token budget; control it with
 //   /goal pause, /goal resume, or /goal clear.
-// Persistence and loop state intentionally stay inside pi-codex-goal's normal
-// session state. This extension only performs preflights and launches the
-// objective; it does not perform fixes, comments, or a separate review loop itself.
+// Persistence and loop state stay inside pi-codex-goal. Starting requires a
+// completion-policy host, not just an objective-only event listener. The current
+// companion lacks that API: fail closed until it implements the documented contract.
 const USAGE = "Usage: /pr-review-goal <pr-number> [--base <branch>]";
 
 type PrReviewOptions = {
@@ -75,6 +77,8 @@ Contract:
 - Preflight: base ${baseRefName}, head ${initialHeadRefOid}; before completion, confirm base is still exactly ${baseRefName} and use latest head SHA.
 - Use gh for PR operations, e.g. gh pr view ${prNumber}, gh pr checkout ${prNumber}, comments, pushes, and metadata.
 - Parent agent owns orchestration and loop decisions. Use pi-subagents with a fresh-context reviewer subagent each review round.
+- The goal host must capture actual reviewer execution status separately from findings and CI. Setup/launch/runtime failures or interruptions are review-failed, never a clean review. Do not switch models or providers as a fallback.
+- Reviewer final output must be exactly one JSON object: {"schemaVersion":1,"attemptId":"<host attempt ID>","headSha":"<reviewed full SHA>","decision":"clean" or "changes_requested","findings":["required finding"]}. A clean verdict requires an empty findings array. Missing, empty, malformed, contradictory or stale verdicts block completion.
 - Inspect PR review comments/conversations from chatgpt-codex-connector/Codex if present via gh/gh api, including review threads and issue comments. Valid evidence-backed Codex concerns are required fixes.
 - For every addressed chatgpt-codex-connector/Codex concern, identify the exact original GitHub comment/thread and reply directly to that comment/thread; do not satisfy it with only a new top-level PR comment.
 - Iterate at parent level: review, inspect Codex threads/comments, fix valid corrections, validate, commit, push, direct-reply/comment, then start a brand-new reviewer on the updated PR diff.
@@ -101,6 +105,10 @@ Do not call goal_complete until: latest fresh reviewer has no valid requests; Co
 }
 
 export default function (pi: ExtensionAPI) {
+  // Re-register the policy after reload/session replacement. The companion must
+  // deny completion for restored protected goals until their policy is resolved.
+  pi.on("session_start", () => { getGuardedHost(pi); });
+
   pi.registerCommand("pr-review-goal", {
     description: "Start a PR review/fix goal; optionally require a target branch with --base",
     handler: async (args, ctx) => {
@@ -110,6 +118,11 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const { prNumber, baseBranch: requestedBaseBranch } = parsed;
+      const host = getGuardedHost(pi);
+      if (!host) {
+        ctx.ui.notify(HOST_BLOCKER, "error");
+        return;
+      }
 
       const repoResult = await exec(pi, "git", ["rev-parse", "--show-toplevel"], ctx.cwd);
       if (repoResult.code !== 0 || !repoResult.stdout?.trim()) {
@@ -180,7 +193,17 @@ export default function (pi: ExtensionAPI) {
       }
 
       const objective = buildGoalObjective(repoRoot, prNumber, allowedBaseRefName, initialHeadRefOid);
-      pi.events.emit("pi-codex-goal:start", { objective });
+      try {
+        const result = await host.startGoal({
+          objective,
+          policy: { id: POLICY_ID, config: { repoRoot, prNumber, baseBranch: allowedBaseRefName } },
+        });
+        if (result?.ok !== true || typeof result.goalId !== "string" || !result.goalId.trim()) {
+          ctx.ui.notify(`blocked: guarded PR-review goal was not acknowledged: ${result?.reason || "missing goal ID or rejected policy"}.`, "error");
+        }
+      } catch (error) {
+        ctx.ui.notify(`blocked: guarded PR-review goal start failed: ${error instanceof Error ? error.message : String(error)}.`, "error");
+      }
     },
   });
 }
