@@ -12,11 +12,12 @@ import { POLICY_ID } from "../src/review-policy.ts";
 // Persistence and loop state stay inside pi-codex-goal. Starting requires a
 // completion-policy host, not just an objective-only event listener. Older
 // companions fail closed rather than silently dropping the protection.
-const USAGE = "Usage: /pr-review-goal <pr-number> [--base <branch>]";
+const USAGE = "Usage: /pr-review-goal <pr-number> [--base <branch>] [--reviewer <provider/model>]";
 
 type PrReviewOptions = {
   prNumber: number;
   baseBranch?: string;
+  reviewer?: { provider: string; model: string };
 };
 
 function unquote(value: string): string {
@@ -27,9 +28,19 @@ export function parseArgs(args: string | undefined): PrReviewOptions | null {
   const tokens = (args ?? "").trim().split(/\s+/).filter(Boolean);
   let prNumber: number | undefined;
   let baseBranch: string | undefined;
+  let reviewer: PrReviewOptions["reviewer"];
 
   for (let index = 0; index < tokens.length; index += 1) {
     const token = unquote(tokens[index] ?? "");
+
+    if (token === "--reviewer" || token.startsWith("--reviewer=")) {
+      if (reviewer) return null;
+      const value = token === "--reviewer" ? unquote(tokens[++index] ?? "") : token.slice("--reviewer=".length);
+      const slash = value.indexOf("/");
+      if (slash <= 0 || slash === value.length - 1 || /\s/.test(value)) return null;
+      reviewer = { provider: value.slice(0, slash), model: value.slice(slash + 1) };
+      continue;
+    }
 
     if (token === "--base" || token === "-b") {
       if (baseBranch !== undefined) return null;
@@ -54,7 +65,7 @@ export function parseArgs(args: string | undefined): PrReviewOptions | null {
   }
 
   if (prNumber === undefined || baseBranch === "") return null;
-  return { prNumber, baseBranch };
+  return { prNumber, baseBranch, ...(reviewer ? { reviewer } : {}) };
 }
 
 type ExecResult = {
@@ -68,15 +79,15 @@ async function exec(pi: ExtensionAPI, command: string, args: string[], cwd: stri
   return pi.exec(command, args, { cwd, timeout: 30000 }) as Promise<ExecResult>;
 }
 
-function buildGoalObjective(repoRoot: string, prNumber: number, baseRefName: string, initialHeadRefOid: string): string {
-  const objective = `Run the automatic PR review/fix/comment loop for PR #${prNumber} in repo ${repoRoot}.
+function buildGoalObjective(repoRoot: string, prNumber: number, baseRefName: string, initialHeadRefOid: string, reviewer: { provider: string; model: string }): string {
+  const objective = `Run the automatic PR review/fix/comment loop for PR #${prNumber} in repo ${repoRoot}. Reviewer is already selected: ${JSON.stringify(reviewer)}. Call run_goal_review({}) to use this persisted selection; do not ask the user to choose again.
 
 Contract:
 - Use the current repo root exactly: ${repoRoot}.
 - The required PR target/base branch is exactly ${baseRefName}.
 - Preflight: base ${baseRefName}, head ${initialHeadRefOid}; before completion, confirm base is still exactly ${baseRefName} and use latest head SHA.
 - Use gh for PR operations, e.g. gh pr view ${prNumber}, gh pr checkout ${prNumber}, comments, pushes, and metadata.
-- Parent agent owns orchestration and loop decisions. Run run_goal_review with the explicitly requested exact provider and model each review round. This host-owned, fresh-context, read-only reviewer is the only accepted execution evidence; ordinary subagent summaries or verdict files do not authorize completion.
+- Parent agent owns orchestration and loop decisions. Call run_goal_review({}) with the persisted reviewer selection above each review round. The command resolved and bound that exact selection from --reviewer or the active session model; this initial inheritance is not fallback. Do not search chat history for another model or switch provider/model after failure. This host-owned, fresh-context, read-only reviewer is the only accepted execution evidence; ordinary subagent summaries or verdict files do not authorize completion.
 - The goal host must capture actual reviewer execution status separately from findings and CI. Setup/launch/runtime failures or interruptions are review-failed, never a clean review. Do not switch models or providers as a fallback.
 - Reviewer final output must be exactly one JSON object: {"schemaVersion":1,"attemptId":"<host attempt ID>","headSha":"<reviewed full SHA>","decision":"clean" or "changes_requested","findings":["required finding"]}. A clean verdict requires an empty findings array. Missing, empty, malformed, contradictory or stale verdicts block completion.
 - Inspect PR review comments/conversations from chatgpt-codex-connector/Codex if present via gh/gh api, including review threads and issue comments. Valid evidence-backed Codex concerns are required fixes.
@@ -118,6 +129,16 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const { prNumber, baseBranch: requestedBaseBranch } = parsed;
+      const reviewer = parsed.reviewer ?? (ctx.model ? { provider: ctx.model.provider, model: ctx.model.id } : undefined);
+      if (!reviewer) {
+        ctx.ui.notify("No active session model. Select one or pass --reviewer <provider/model>; no goal was started.", "warning");
+        return;
+      }
+      const selected = ctx.modelRegistry.find(reviewer.provider, reviewer.model);
+      if (!selected || selected.provider !== reviewer.provider || selected.id !== reviewer.model) {
+        ctx.ui.notify(`Unknown exact reviewer model ${reviewer.provider}/${reviewer.model}; no goal was started and no fallback was selected.`, "error");
+        return;
+      }
       const host = getGuardedHost(pi);
       if (!host) {
         ctx.ui.notify(HOST_BLOCKER, "error");
@@ -187,11 +208,11 @@ export default function (pi: ExtensionAPI) {
       // A checkout may be renamed or installed under an arbitrary package path;
       // command source filenames are neither an API nor proof of enforcement.
 
-      const objective = buildGoalObjective(repoRoot, prNumber, allowedBaseRefName, initialHeadRefOid);
+      const objective = buildGoalObjective(repoRoot, prNumber, allowedBaseRefName, initialHeadRefOid, reviewer);
       try {
         const result = await host.startGoal({
           objective,
-          policy: { id: POLICY_ID, config: { repoRoot, prNumber, baseBranch: allowedBaseRefName } },
+          policy: { id: POLICY_ID, reviewer, config: { repoRoot, prNumber, baseBranch: allowedBaseRefName } },
         });
         if (result?.ok !== true || typeof result.goalId !== "string" || !result.goalId.trim()) {
           ctx.ui.notify(`blocked: guarded PR-review goal was not acknowledged: ${result?.reason || "missing goal ID or rejected policy"}.`, "error");

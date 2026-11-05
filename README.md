@@ -11,14 +11,16 @@ pi install git:github.com/matifuentes2/pi-pr-review-goal
 ## Command
 
 ```bash
-/pr-review-goal <pr-number> [--base <branch>]
+/pr-review-goal <pr-number> [--base <branch>] [--reviewer <provider/model>]
 ```
 
 Starts a Codex-style PR review/fix/comment loop for a GitHub PR **only with a completion-policy-capable `pi-codex-goal` host**.
 
 Install the matching policy-aware `pi-codex-goal` revision from `companion-ref.json` and use Pi 1.5+. Older objective-only companions fail closed without replacing your current goal. See [the completion boundary, trust model, and integration tests](docs/completion-policy.md).
 
-Each round uses `run_goal_review({ provider, model })` with the exact explicitly selected provider/model. The companion launches a fresh read-only reviewer and captures its real execution and final verdict; parent-written summaries cannot authorize completion. Setup/runtime failure pauses the goal without model fallback. Completion independently requires a fresh clean verdict, current PR head/base, passing CI and mergeability.
+By default the command resolves the **active session's actual provider/model** and persists it as the reviewer selection. No extra model choice is required. `--reviewer <provider/model>` overrides that initial selection. Each round calls `run_goal_review({})` using the bound selection, which cannot silently change after a model switch or failed launch. Initial inheritance is not fallback.
+
+The companion launches a fresh read-only reviewer and captures its real execution and final verdict; parent-written summaries cannot authorize completion. Setup/runtime failure pauses the goal without model fallback. Completion independently requires a fresh clean verdict, current PR head/base, passing CI and mergeability.
 
 - Without `--base`, the PR must target `develop` or `dev` (backward-compatible default).
 - With `--base <branch>` (or `-b <branch>` / `--base=<branch>`), the PR must target that branch exactly.

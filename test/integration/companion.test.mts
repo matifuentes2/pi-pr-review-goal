@@ -62,6 +62,7 @@ async function setup(t: any) {
     if (program === "gh" && args[1] === "diff") stdout = "diff --git a/file.ts b/file.ts\n+export const ok = true;";
     return { code: 0, stdout, stderr: "", killed: false };
   };
+  h.ctx.model = { provider: "requested", id: "exact-model" };
   h.ctx.modelRegistry.find = (provider: string, id: string) => provider === "requested" && id === "exact-model" ? { provider, id } : undefined;
   reviewExtension(h.pi);
   await h.emit("session_start", { type: "session_start", reason: "startup" });
@@ -71,9 +72,13 @@ async function setup(t: any) {
 }
 const options = { skip: process.platform === "win32" ? "POSIX fixture executable; native subprocess transport is tested in companion suite." : false };
 
-test("real extensions + tool + subprocess ledger + policy + persistence complete a clean review", options, async t => {
+test("default command inherits resolved model and no-argument reviewer completes through the real host", options, async t => {
   const { h } = await setup(t);
-  await h.runTool("run_goal_review", { provider: "requested", model: "exact-model" });
+  assert.deepEqual(h.snapshot().goal.completionPolicy.reviewer, { provider: "requested", model: "exact-model" });
+  assert.match(String(h.sentUserMessages.at(-1).content), /Reviewer is already selected: requested\/exact-model/);
+  assert.match(String(h.sentUserMessages.at(-1).content), /run_goal_review\(\{\}\)/);
+  assert.deepEqual((await h.runTool("get_goal", {})).details.goal.reviewer, { provider: "requested", model: "exact-model" });
+  await h.runTool("run_goal_review", {});
   const evidence = h.snapshot().goal?.reviewExecution;
   assert.equal(evidence.status, "completed");
   assert.equal(evidence.freshContext, true);
@@ -103,7 +108,7 @@ test("new failed attempt supersedes successful evidence and survives pause/resum
   const { h } = await setup(t);
   await h.runTool("run_goal_review", { provider: "requested", model: "exact-model" });
   const old = h.snapshot().goal.reviewExecution.attemptId;
-  await assert.rejects(h.runTool("run_goal_review", { provider: "wrong", model: "missing" }), /Unknown exact reviewer model/);
+  await assert.rejects(h.runTool("run_goal_review", { provider: "wrong", model: "missing" }), /bound to/);
   assert.notEqual(h.snapshot().goal.reviewExecution.attemptId, old);
   assert.equal(h.snapshot().goal.status, "paused");
   assert.equal(h.snapshot().goal.reviewExecution.status, "launch_failed");
@@ -113,6 +118,25 @@ test("new failed attempt supersedes successful evidence and survives pause/resum
   reviewExtension(h.pi);
   await h.emit("session_start", { type: "session_start", reason: "resume" });
   await assert.rejects(h.runTool("update_goal", { status: "complete" }), /review-failed/);
+});
+test("bound reviewer survives reload and later session-model changes without fallback", options, async t => {
+  const { h } = await setup(t);
+  const selection = h.snapshot().goal.completionPolicy.reviewer;
+  await h.reloadSession("resume"); reviewExtension(h.pi);
+  await h.emit("session_start", { type: "session_start", reason: "resume" });
+  h.ctx.model = { provider: "different", id: "different-model" };
+  await h.runTool("run_goal_review", {});
+  assert.deepEqual(h.snapshot().goal.completionPolicy.reviewer, selection);
+  assert.equal(h.snapshot().goal.reviewExecution.provider, "requested");
+  assert.equal(h.snapshot().goal.reviewExecution.model, "exact-model");
+});
+test("legacy goals without a selection bind their current resolved model once on first review", options, async t => {
+  const { h } = await setup(t);
+  for (const entry of h.entries) if (entry.data?.kind === "set") delete entry.data.goal.completionPolicy.reviewer;
+  await h.reloadSession("resume"); reviewExtension(h.pi);
+  await h.emit("session_start", { type: "session_start", reason: "resume" });
+  await h.runTool("run_goal_review", {});
+  assert.deepEqual(h.snapshot().goal.completionPolicy.reviewer, { provider: "requested", model: "exact-model" });
 });
 test("latest PR head and CI remain independent completion requirements", options, async t => {
   const { h, changeHead, failCI } = await setup(t);
@@ -165,7 +189,7 @@ test("installed Pi CLI runs isolated review end-to-end against local model fixtu
     await new Promise<void>(resolve => server.close(() => resolve()));
     await rm(agentDir, { recursive: true, force: true });
   });
-  await h.runTool("run_goal_review", { provider: "requested", model: "exact-model" });
+  await h.runTool("run_goal_review", {});
   assert.equal(calls, 1);
   assert.equal(h.snapshot().goal.reviewExecution.status, "completed");
   await h.runTool("update_goal", { status: "complete" });
