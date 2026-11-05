@@ -14,8 +14,8 @@ Pi 1.5+ on PATH (on native Windows the host invokes its installed SDK CLI with N
 Restart/reload Pi after updating both packages. Updating only this package does
 not retrofit the policy boundary into an old companion.
 
-The companion work is linked from PR #1. Merge/deploy the companion before the
-consumer; until then the old installation intentionally stays fail-closed.
+The matching companion work is linked from `companion-ref.json`. Merge/deploy the
+companion before the consumer; until then the old installation intentionally stays fail-closed.
 
 ## Trust boundary and lifecycle
 
@@ -43,10 +43,23 @@ parent-authored execution evidence or an assertion that a reviewer ran.
 
 ## Trusted reviewer execution
 
-Use `run_goal_review({ provider, model })` with the exact, explicitly selected
-provider/model. The host verifies the active model registry before launch, creates
-its own attempt UUID, and persists `running` **before** setup. A newer attempt
-supersedes any earlier clean result, including when its launch fails.
+`/pr-review-goal` resolves the active session's actual provider/model at command
+start, validates it in the current registry, and persists it as
+`completionPolicy.reviewer`. The optional `--reviewer <provider/model>` flag overrides
+that initial selection. The generated objective includes the resolved pair; the
+agent must not search chat history or ask the user to choose it again.
+
+Use `run_goal_review({})` to launch the persisted selection. Explicit provider/model
+arguments, if supplied, must match it; switching the parent model or retrying after
+a failed launch never changes the reviewer. Legacy goals without this field bind
+the current resolved model once at their first review (or an explicit pair), so
+existing paused goals can recover without manually rewriting session files.
+`get_goal` exposes the selection as a structured field, not only buried in the
+objective. Initial inheritance is selection, **not** fallback.
+
+The host verifies the model registry before launch, creates its own attempt UUID,
+and persists `running` **before** setup. A newer attempt supersedes any earlier
+clean result, including when its launch fails.
 
 The registered policy prepares current PR metadata and diff using `gh`; it requires
 a clean checkout at the remote PR head and the configured target branch. Metadata
@@ -62,8 +75,8 @@ message, checks the exact provider/model, and persists the raw final output.
 Partial streams, failed/aborted/length-limited responses, missing final messages,
 nonzero exits, interrupted processes, timeout and output overflow cannot authorize
 completion. Setup/runtime failure pauses an active goal with attention instead of
-continuing indefinitely. A retry requires an explicitly chosen model; there is no
-automatic fallback. Temporary process directories are removed after termination.
+continuing indefinitely. Retries keep the already-bound model; choosing another
+requires a new goal, never automatic fallback. Temporary process directories are removed after termination.
 
 The model's final output must be exactly one JSON object:
 
@@ -99,7 +112,9 @@ one of those duties or automatically merge a PR.
 ## Adapter
 
 On synchronous `pi-codex-goal:completion-policy-host:v1`, exactly one companion
-listener calls `provide(host)`. Late/duplicate providers and registration errors
+listener calls `provide(host)`. The host must also advertise
+`reviewerSelectionVersion: 1`; older v1 hosts cannot silently start the new
+no-argument-reviewer workflow. Late/duplicate providers and registration errors
 fail closed. `registerPolicy(id, audit, prepareReview)` supplies trusted callbacks;
 `startGoal({objective, policy})` returns an acknowledged goal ID. The companion
 owns reviewer launch, ledger capture, persistence and final completion. A shim

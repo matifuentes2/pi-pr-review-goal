@@ -7,16 +7,17 @@ import type { CompletionEvidence, GateResult, PolicyConfig } from "./review-poli
 export const HOST_EVENT = "pi-codex-goal:completion-policy-host:v1";
 export interface CompletionPolicyHost {
   apiVersion: 1;
+  reviewerSelectionVersion: 1;
   registerPolicy(id: string, audit: (config: PolicyConfig, evidence: CompletionEvidence) => Promise<GateResult>,
     prepare: (config: PolicyConfig, attemptId: string) => Promise<{ headSha: string; prompt: string; cwd: string }>): void;
-  startGoal(request: { objective: string; policy: { id: string; config: PolicyConfig } }): Promise<{
+  startGoal(request: { objective: string; policy: { id: string; config: PolicyConfig; reviewer: { provider: string; model: string } } }): Promise<{
     ok: boolean;
     goalId?: string;
     reason?: string;
   }>;
 }
 
-export const HOST_BLOCKER = "blocked: pi-codex-goal does not provide the required completion-policy host v1. " +
+export const HOST_BLOCKER = "blocked: pi-codex-goal does not provide the required completion-policy host v1 with persisted reviewer-selection support. " +
   "Its objective-only start API cannot enforce reviewer success. No PR-review goal was started or replaced. " +
   "Companion changes are required; see pi-pr-review-goal/docs/completion-policy.md.";
 
@@ -31,7 +32,7 @@ export function getGuardedHost(pi: ExtensionAPI): CompletionPolicyHost | null {
       provide(candidate: CompletionPolicyHost) {
         if (!accepting) return;
         replies++;
-        if (candidate?.apiVersion === 1 && typeof candidate.registerPolicy === "function" && typeof candidate.startGoal === "function") {
+        if (candidate?.apiVersion === 1 && candidate.reviewerSelectionVersion === 1 && typeof candidate.registerPolicy === "function" && typeof candidate.startGoal === "function") {
           host = candidate;
         }
       },

@@ -14,8 +14,8 @@ function harness(host?: any) {
   const policies = new Map<string, any>();
   const prepares = new Map<string, any>();
   const execs: any[] = [];
-  const adapter = host ?? {
-    apiVersion: 1,
+  const adapter = host ? { reviewerSelectionVersion: 1, ...host } : {
+    apiVersion: 1, reviewerSelectionVersion: 1,
     registerPolicy: (id: string, audit: any, prepare: any) => { policies.set(id, audit); prepares.set(id, prepare); },
     startGoal: async (request: any) => { starts.push(request); return { ok: true, goalId: "goal-1" }; },
   };
@@ -36,8 +36,10 @@ function harness(host?: any) {
     },
   };
   extension(pi);
-  const run = (args = "7 --base main") => commands.get("pr-review-goal").handler(args, { cwd: "/repo", ui: { notify: (s: string) => notices.push(s) } });
-  return { pi, run, commands, handlers, events, notices, starts, policies, prepares, execs, disable: () => { enabled = false; } };
+  const ctx: any = { cwd: "/repo", model: { provider: "openai", id: "gpt-6.1-sol" },
+    modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) }, ui: { notify: (s: string) => notices.push(s) } };
+  const run = (args = "7 --base main") => commands.get("pr-review-goal").handler(args, ctx);
+  return { pi, ctx, run, commands, handlers, events, notices, starts, policies, prepares, execs, disable: () => { enabled = false; } };
 }
 
 test("legacy objective-only companion blocks before any repo mutation or goal replacement", async () => {
@@ -57,7 +59,7 @@ test("generic goal tools/commands and lifecycle are not overridden", async () =>
 test("a compatible adapter receives policy metadata, never objective-only dispatch", async () => {
   const h = harness(); await h.run();
   assert.equal(h.starts.length, 1);
-  assert.deepEqual(h.starts[0].policy, { id: POLICY_ID, config: { repoRoot: "/repo", prNumber: 7, baseBranch: "main" } });
+  assert.deepEqual(h.starts[0].policy, { id: POLICY_ID, reviewer: { provider: "openai", model: "gpt-6.1-sol" }, config: { repoRoot: "/repo", prNumber: 7, baseBranch: "main" } });
   assert.ok(h.starts[0].objective.length <= 8000);
   assert.ok(h.policies.has(POLICY_ID));
   assert.ok(!h.events.includes("pi-codex-goal:start"));
@@ -116,8 +118,38 @@ for (const mode of ["clean", "wrong-checkout", "dirty", "changed-head", "wrong-b
   });
 }
 
+test("regression: /pr-review-goal 86 --base main binds resolved active model without asking again", async () => {
+  const h = harness(); await h.run("86 --base main");
+  assert.equal(h.starts.length, 1);
+  assert.deepEqual(h.starts[0].policy.reviewer, { provider: "openai", model: "gpt-6.1-sol" });
+  assert.match(h.starts[0].objective, /Reviewer is already selected/);
+  assert.match(h.starts[0].objective, /run_goal_review\(\{\}\)/);
+  assert.match(h.starts[0].objective, /do not ask the user to choose again/);
+});
+test("explicit reviewer override works without an active model and preserves slash-qualified model ID", async () => {
+  const h = harness(); h.ctx.model = undefined;
+  await h.run("86 --base main --reviewer provider/family/model");
+  assert.deepEqual(h.starts[0].policy.reviewer, { provider: "provider", model: "family/model" });
+});
+test("missing or unknown resolved reviewer blocks before starting a goal", async () => {
+  for (const mode of ["missing", "unknown"]) {
+    const h = harness();
+    if (mode === "missing") h.ctx.model = undefined;
+    else h.ctx.modelRegistry.find = () => undefined;
+    await h.run("86 --base main");
+    assert.equal(h.starts.length, 0);
+    assert.equal(h.execs.length, 0);
+    assert.match(h.notices.join(" "), /No active session model|Unknown exact reviewer model/);
+  }
+});
+test("old v1 hosts without persisted reviewer selection cannot start a mismatched workflow", async () => {
+  const h = harness({ apiVersion: 1, reviewerSelectionVersion: undefined, registerPolicy() {}, startGoal() {} });
+  await h.run(); assert.equal(h.starts.length, 0);
+  assert.match(h.notices.join(" "), /reviewer-selection support/);
+});
 test("argument contract preserved", () => {
   assert.deepEqual(parseArgs("7 --base main"), { prNumber: 7, baseBranch: "main" });
   assert.deepEqual(parseArgs("7"), { prNumber: 7, baseBranch: undefined });
-  for (const args of ["", "0", "1 --base", "7 --base main --base dev", "7 --bad"]) assert.equal(parseArgs(args), null);
+  assert.deepEqual(parseArgs("7 --reviewer=openai/gpt-6.1-sol"), { prNumber: 7, baseBranch: undefined, reviewer: { provider: "openai", model: "gpt-6.1-sol" } });
+  for (const args of ["", "0", "1 --base", "7 --base main --base dev", "7 --bad", "7 --reviewer", "7 --reviewer=/model", "7 --reviewer=provider/", "7 --reviewer a/b --reviewer c/d"]) assert.equal(parseArgs(args), null);
 });
