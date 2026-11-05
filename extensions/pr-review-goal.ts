@@ -183,14 +183,9 @@ export default function (pi: ExtensionAPI) {
 
       const initialHeadRefOid = headRefOid.trim();
 
-      const goalCommand = pi.getCommands().find((command) => {
-        const path = command.sourceInfo?.path ?? "";
-        return command.name.startsWith("goal") && path.includes("pi-codex-goal");
-      });
-      if (!goalCommand) {
-        ctx.ui.notify("pi-codex-goal must be installed/enabled before using /pr-review-goal.", "warning");
-        return;
-      }
+      // Successful host discovery/registration is the compatibility boundary.
+      // A checkout may be renamed or installed under an arbitrary package path;
+      // command source filenames are neither an API nor proof of enforcement.
 
       const objective = buildGoalObjective(repoRoot, prNumber, allowedBaseRefName, initialHeadRefOid);
       try {

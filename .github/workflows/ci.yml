@@ -18,8 +18,7 @@ jobs:
           bun-version: '1.4.0'
       - name: Read tested companion revision
         id: companion
-        run: |
-          node -e 'const fs=require("node:fs");const ref=JSON.parse(fs.readFileSync("companion-ref.json","utf8"));if(!/^[a-f0-9]{40}$/.test(ref.revision))throw Error("Invalid companion SHA");fs.appendFileSync(process.env.GITHUB_OUTPUT,`repository=${ref.repository}\nrevision=${ref.revision}\npiVersion=${ref.piVersion}\n`);'
+        run: node scripts/ci-companion-ref.mjs
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: ${{ steps.companion.outputs.repository }}

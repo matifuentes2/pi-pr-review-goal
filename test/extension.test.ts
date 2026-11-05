@@ -62,6 +62,10 @@ test("a compatible adapter receives policy metadata, never objective-only dispat
   assert.ok(h.policies.has(POLICY_ID));
   assert.ok(!h.events.includes("pi-codex-goal:start"));
 });
+test("compatible host works from renamed installations without command path heuristics", async () => {
+  const h = harness(); h.pi.getCommands = () => []; await h.run();
+  assert.equal(h.starts.length, 1);
+});
 test("restored policy is re-registered on session_start", () => {
   const h = harness(); h.handlers.get("session_start")(); assert.ok(h.policies.has(POLICY_ID));
 });
