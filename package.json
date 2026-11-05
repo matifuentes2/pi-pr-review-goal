@@ -2,8 +2,13 @@
   "name": "pi-pr-review-goal",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Pi extension that starts an automated PR review/fix goal loop.",
   "keywords": ["pi-package", "pi-extension"],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test:integration": "node scripts/test-integration.mjs"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },

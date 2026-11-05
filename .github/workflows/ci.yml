@@ -1,0 +1,45 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.4.0'
+      - name: Read tested companion revision
+        id: companion
+        run: node scripts/ci-companion-ref.mjs
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ steps.companion.outputs.repository }}
+          ref: ${{ steps.companion.outputs.revision }}
+          path: .companion
+          persist-credentials: false
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - name: Verify and build real companion
+        run: |
+          npm ci --ignore-scripts --prefix .companion
+          npm run verify --prefix .companion
+          npm run build --prefix .companion
+      - name: Install isolated Pi CLI for protocol integration
+        env:
+          PI_VERSION: ${{ steps.companion.outputs.piVersion }}
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pi-cli" --ignore-scripts "@earendil-works/pi-coding-agent@$PI_VERSION"
+          echo "$RUNNER_TEMP/pi-cli/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Test real built companion and Pi CLI
+        env:
+          PI_CODEX_GOAL_ROOT: ${{ github.workspace }}/.companion
+        run: npm run test:integration
+      - run: git diff --check

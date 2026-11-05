@@ -1,15 +1,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getGuardedHost, HOST_BLOCKER } from "../src/goal-host.ts";
+import { POLICY_ID } from "../src/review-policy.ts";
 
 // /pr-review-goal usage contract:
 // - Run from inside the target git repo: /pr-review-goal <pr-number> [--base <branch>]
 // - Without --base, the PR must target exactly develop or dev (legacy behavior).
 // - With --base, the PR must target exactly the specified branch.
-// - Requires gh, pi-subagents, and pi-codex-goal.
+// - Requires gh and a completion-policy-aware pi-codex-goal.
 // - The command starts a Codex-style goal with no token budget; control it with
 //   /goal pause, /goal resume, or /goal clear.
-// Persistence and loop state intentionally stay inside pi-codex-goal's normal
-// session state. This extension only performs preflights and launches the
-// objective; it does not perform fixes, comments, or a separate review loop itself.
+// Persistence and loop state stay inside pi-codex-goal. Starting requires a
+// completion-policy host, not just an objective-only event listener. Older
+// companions fail closed rather than silently dropping the protection.
 const USAGE = "Usage: /pr-review-goal <pr-number> [--base <branch>]";
 
 type PrReviewOptions = {
@@ -74,7 +76,9 @@ Contract:
 - The required PR target/base branch is exactly ${baseRefName}.
 - Preflight: base ${baseRefName}, head ${initialHeadRefOid}; before completion, confirm base is still exactly ${baseRefName} and use latest head SHA.
 - Use gh for PR operations, e.g. gh pr view ${prNumber}, gh pr checkout ${prNumber}, comments, pushes, and metadata.
-- Parent agent owns orchestration and loop decisions. Use pi-subagents with a fresh-context reviewer subagent each review round.
+- Parent agent owns orchestration and loop decisions. Run run_goal_review with the explicitly requested exact provider and model each review round. This host-owned, fresh-context, read-only reviewer is the only accepted execution evidence; ordinary subagent summaries or verdict files do not authorize completion.
+- The goal host must capture actual reviewer execution status separately from findings and CI. Setup/launch/runtime failures or interruptions are review-failed, never a clean review. Do not switch models or providers as a fallback.
+- Reviewer final output must be exactly one JSON object: {"schemaVersion":1,"attemptId":"<host attempt ID>","headSha":"<reviewed full SHA>","decision":"clean" or "changes_requested","findings":["required finding"]}. A clean verdict requires an empty findings array. Missing, empty, malformed, contradictory or stale verdicts block completion.
 - Inspect PR review comments/conversations from chatgpt-codex-connector/Codex if present via gh/gh api, including review threads and issue comments. Valid evidence-backed Codex concerns are required fixes.
 - For every addressed chatgpt-codex-connector/Codex concern, identify the exact original GitHub comment/thread and reply directly to that comment/thread; do not satisfy it with only a new top-level PR comment.
 - Iterate at parent level: review, inspect Codex threads/comments, fix valid corrections, validate, commit, push, direct-reply/comment, then start a brand-new reviewer on the updated PR diff.
@@ -91,7 +95,7 @@ Contract:
 - Repeat fresh review + Codex inspection -> fixes -> validation -> commit/push -> Spanish replies -> CI/conflict gate until no valid concern remains and latest-head CI is green.
 - If reviewer reports no valid change requests in the first round, state that zero fix rounds were needed; otherwise do not stop after one review/fix round.
 
-Do not call goal_complete until: latest fresh reviewer has no valid requests; Codex/chatgpt-codex-connector conversations were inspected and no valid concern remains unresolved; fixes are committed/pushed; comments use real Markdown newlines via --body-file with no literal \\n; Spanish replies were posted directly on original Codex/chatgpt-codex-connector comments/threads for addressed valid concerns; conflicts are resolved/pushed, especially if no checks appeared; PR still targets exactly ${baseRefName}; latest-head CI/checks are green with no bad/pending/queued/in_progress; validation evidence was checked.`;
+Do not call update_goal(status: complete) until: latest fresh reviewer has no valid requests; Codex/chatgpt-codex-connector conversations were inspected and no valid concern remains unresolved; fixes are committed/pushed; comments use real Markdown newlines via --body-file with no literal \\n; Spanish replies were posted directly on original Codex/chatgpt-codex-connector comments/threads for addressed valid concerns; conflicts are resolved/pushed, especially if no checks appeared; PR still targets exactly ${baseRefName}; latest-head CI/checks are green with no bad/pending/queued/in_progress; validation evidence was checked.`;
 
   if (objective.length > 8000) {
     throw new Error("Generated /goal objective exceeds 8000 characters.");
@@ -101,6 +105,10 @@ Do not call goal_complete until: latest fresh reviewer has no valid requests; Co
 }
 
 export default function (pi: ExtensionAPI) {
+  // Re-register the policy after reload/session replacement. The companion must
+  // deny completion for restored protected goals until their policy is resolved.
+  pi.on("session_start", () => { getGuardedHost(pi); });
+
   pi.registerCommand("pr-review-goal", {
     description: "Start a PR review/fix goal; optionally require a target branch with --base",
     handler: async (args, ctx) => {
@@ -110,6 +118,11 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       const { prNumber, baseBranch: requestedBaseBranch } = parsed;
+      const host = getGuardedHost(pi);
+      if (!host) {
+        ctx.ui.notify(HOST_BLOCKER, "error");
+        return;
+      }
 
       const repoResult = await exec(pi, "git", ["rev-parse", "--show-toplevel"], ctx.cwd);
       if (repoResult.code !== 0 || !repoResult.stdout?.trim()) {
@@ -170,17 +183,22 @@ export default function (pi: ExtensionAPI) {
 
       const initialHeadRefOid = headRefOid.trim();
 
-      const goalCommand = pi.getCommands().find((command) => {
-        const path = command.sourceInfo?.path ?? "";
-        return command.name.startsWith("goal") && path.includes("pi-codex-goal");
-      });
-      if (!goalCommand) {
-        ctx.ui.notify("pi-codex-goal must be installed/enabled before using /pr-review-goal.", "warning");
-        return;
-      }
+      // Successful host discovery/registration is the compatibility boundary.
+      // A checkout may be renamed or installed under an arbitrary package path;
+      // command source filenames are neither an API nor proof of enforcement.
 
       const objective = buildGoalObjective(repoRoot, prNumber, allowedBaseRefName, initialHeadRefOid);
-      pi.events.emit("pi-codex-goal:start", { objective });
+      try {
+        const result = await host.startGoal({
+          objective,
+          policy: { id: POLICY_ID, config: { repoRoot, prNumber, baseBranch: allowedBaseRefName } },
+        });
+        if (result?.ok !== true || typeof result.goalId !== "string" || !result.goalId.trim()) {
+          ctx.ui.notify(`blocked: guarded PR-review goal was not acknowledged: ${result?.reason || "missing goal ID or rejected policy"}.`, "error");
+        }
+      } catch (error) {
+        ctx.ui.notify(`blocked: guarded PR-review goal start failed: ${error instanceof Error ? error.message : String(error)}.`, "error");
+      }
     },
   });
 }
