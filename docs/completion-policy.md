@@ -1,153 +1,124 @@
-# Reviewer-success completion policy — companion blocker
+# Reviewer-success completion policy
 
-## Delivery status
+`pi-pr-review-goal` and the policy-aware `pi-codex-goal` companion implement an
+awaited reviewer-success gate. Older objective-only companions remain unsupported:
+`/pr-review-goal` reports `blocked` without starting or replacing a goal. There is
+no legacy-event fallback, generic tool interception, or model/provider fallback.
 
-**The end-to-end gate is not implemented in the current `pi-codex-goal`.**
-This package now refuses to start an unprotected PR-review goal. Its policy
-implementation and adapter contract are tested locally, but the adapter API below
-is **proposed**, not an existing supported companion API. With the current
-companion, `/pr-review-goal` reports `blocked` and leaves any existing goal alone.
-Do not treat this change as restoration of the automatic review workflow.
+## Installation and compatibility
 
-No models, providers, authentication, branch protections or generic goal tools
-are modified. There is no fallback to the legacy objective-only start event.
+Install both companion revisions together. `companion-ref.json` pins the tested
+`matifuentes2/pi-codex-goal` revision; CI checks out that exact commit and tests its
+**built `dist/index.js` entrypoint**, not a mock host. The isolated reviewer requires
+Pi 1.5+ on PATH (on native Windows the host invokes its installed SDK CLI with Node).
+Restart/reload Pi after updating both packages. Updating only this package does
+not retrofit the policy boundary into an old companion.
 
-## Inspected real integration
+The companion work is linked from PR #1. Merge/deploy the companion before the
+consumer; until then the old installation intentionally stays fail-closed.
 
-Inspected the MacBook install under
-`~/.pi/agent/git/github.com/matifuentes2/pi-codex-goal/src/`
-at commit `49caf02f33bcccb42d51655c128f0cd0cb5ece61`:
+## Trust boundary and lifecycle
 
-- `goal-runtime-controller.ts::registerGoalRuntimeController` listens to
-  `pi-codex-goal:start`, extracts **only `objective`**, and uses `replaceGoal` /
-  `controller.setGoal`. Extra metadata sent on that event is silently ignored.
-  It also unconditionally replaces an existing goal.
-- `tools.ts::update_goal` calls `host.completeGoal`.
-- `goal-runtime-controller.ts::completeGoal` accounts usage and delegates to
-  `goal-state-controller.ts::completeGoal`.
-- The latter calls `updateGoalStatus(goal, "complete")` and persists a `set`
-  transition. There is no awaited completion validator.
-- `types.ts::ThreadGoal` has no policy/evidence field. Custom goal entries are
-  version 1 and contain snapshots, usage and clear/recovery state only.
-- `commands.ts` currently offers pause/resume/clear/copy, not manual completion.
-  Any future manual/API completion must still go through the invariant below.
+- Protected goals persist `completionPolicy: { id, config }` and host-owned
+  `reviewExecution` metadata in ordinary session entries. Generic goals have no
+  descriptor and retain their existing behavior.
+- `update_goal` awaits the real companion completion boundary. Direct state
+  transitions/snapshot writes cannot mark a protected goal complete or strip its
+  descriptor/evidence. The persistence layer alone commits successful completion;
+  terminal runtime effects happen only after the audit succeeds.
+- Missing/malformed policies, exceptions, invalid results, timeout, and aborted
+  audits deny completion. Goal/session mutations, policy replacement, newer
+  attempts and concurrent completion invalidate in-flight authorizations.
+- Accounting, pause/resume, compaction, session reload, tree navigation and forks
+  preserve policy metadata. Restore converts running reviews to `interrupted`
+  and pauses them. Historical protected completion is restored paused and must be
+  re-audited, not grandfathered when its validator is unavailable.
+- Clear/replacement cancels a goal, never completes it. Starting a PR-review goal
+  does not replace an existing non-complete goal.
 
-The Pi SDK's `tool_call` interception is not a substitute: it gates a tool
-invocation, not all persistence transitions. Prompt additions, post-hoc state
-correction, or treating CI success as reviewer success do not solve this.
+Session storage, installed extensions and the local OS are trusted. This is not a
+sandbox against a user or agent with unrestricted shell access rewriting extension
+code or session journals. No completion tool accepts an uploaded verdict file,
+parent-authored execution evidence or an assertion that a reviewer ran.
 
-## Required companion implementation scope (blocking)
+## Trusted reviewer execution
 
-1. Add a **durable policy descriptor** to protected goals, including policy ID,
-   version/configuration and goal ID. Keep legacy generic goals unchanged.
-   Preserve this descriptor through accounting, pause/resume, replacement,
-   compaction, reload, session switch/fork/tree navigation and persistence.
-2. Add a policy registry and an **awaited, deny-by-default completion boundary**.
-   Every path that can write `status: complete` (tool, command, API, runtime or
-   direct `set`) must use it. Reject missing policy handlers, exceptions,
-   aborts, invalid results and stale snapshots. A manual completion request
-   must not bypass it. Clear/replacement is cancellation, never completion.
-3. Make protected completion asynchronous. Audit before changing completion
-   state or running terminal transition effects; re-check goal ID/policy and
-   execution generation after awaiting the audit. Concurrent completion calls,
-   replacements and newer review attempts must invalidate old authorizations.
-   A newer failed/running attempt supersedes any older clean one.
-4. Capture **trusted actual reviewer execution**, including setup failure before
-   child launch. Store unique attempt ID, goal ID, reviewed PR head, fresh-context
-   provenance, terminal execution status/reason and raw final reviewer output.
-   Do not accept parent-authored evidence, prompt claims, partial output or
-   manually uploaded verdict files as proof. On interrupted in-flight attempts,
-   persist failure/unknown rather than retaining an earlier clean authorization.
-   On resume, require a new attempt when the persisted execution is not known
-   successful. No unauthorized model/provider fallback.
-5. Provide the adapter below and integration tests exercising the **real** state
-   controller, tools and persistence, including manual/direct completion,
-   reload/resume, stale attempts and races. Preserve generic goals' behavior.
-6. Return/report audit category and reason; review failure is not a finding or
-   CI success. Leave a rejected completion non-complete (pause with attention
-   for execution/setup errors); do not let automatic continuation spin forever
-   on an unsupported reviewer model.
+Use `run_goal_review({ provider, model })` with the exact, explicitly selected
+provider/model. The host verifies the active model registry before launch, creates
+its own attempt UUID, and persists `running` **before** setup. A newer attempt
+supersedes any earlier clean result, including when its launch fails.
 
-This is a companion code change, not a settings/model-pin fix. No companion
-checkout was changed by this PR. The parent owns nixos-config PR #110 separately.
+The registered policy prepares current PR metadata and diff using `gh`; it requires
+a clean checkout at the remote PR head and the configured target branch. Metadata
+is re-read around preparation and after reviewer execution. The host launches a
+new Pi process in a temporary directory, without session history, extensions, MCP,
+skills, prompt templates or context files. Only read/grep/find/ls tools are enabled;
+there are no write, shell, GitHub or delegation tools. Repository content is data,
+not instructions. The reviewer receives the trusted PR diff and absolute source
+paths, not the parent's conversation or goal history.
 
-## Proposed adapter contract
+The host captures the actual process exit and authoritative final assistant
+message, checks the exact provider/model, and persists the raw final output.
+Partial streams, failed/aborted/length-limited responses, missing final messages,
+nonzero exits, interrupted processes, timeout and output overflow cannot authorize
+completion. Setup/runtime failure pauses an active goal with attention instead of
+continuing indefinitely. A retry requires an explicitly chosen model; there is no
+automatic fallback. Temporary process directories are removed after termination.
 
-Types are defined in `src/goal-host.ts`. On synchronous Pi event
-`pi-codex-goal:completion-policy-host:v1`, exactly one companion listener calls
-`request.provide(host)` before returning. No reply, late replies, duplicate
-providers, wrong version, registration error or missing functions block start.
-
-The host exposes:
-
-- `apiVersion: 1`
-- `registerPolicy(id, audit)` — register/replace the runtime validator. Restored
-  goals with an unavailable validator must remain non-completable. The extension
-  re-registers on session start and before a guarded start.
-- `startGoal({objective, policy: {id, config}})` — atomically bind and persist the
-  policy **before** exposing/queuing the goal. Return `{ok: true, goalId}` only
-  after protection is installed. Reject an existing non-complete goal without
-  explicit replacement authorization. On failure, leave existing state intact.
-
-This version certifies **all** the invariant requirements above, not just the
-presence of these functions. Do not expose this version from a partial shim that
-forwards to `pi-codex-goal:start`. Do not persist callbacks; persist the descriptor
-and resolve the registered validator after restore. Do not pass evidence supplied
-as tool parameters; build `CompletionEvidence` from the host's execution ledger.
-
-The audit callback is already wired to `src/review-policy.ts::auditCompletion`.
-It independently reads the current PR head/base, checks trusted execution and
-explicit verdict, checks CI/mergeability separately, then re-reads metadata to
-reject a head/base race. A subsequent remote push is inherently possible after
-any local audit; record the exact authorized SHA at completion. GitHub branch
-protection remains the authority for merging. This extension never merges.
-
-## Verdict and audit semantics
-
-A successfully completed fresh reviewer must return **only** JSON:
+The model's final output must be exactly one JSON object:
 
 ```json
-{
-  "schemaVersion": 1,
-  "attemptId": "host-issued-attempt-id",
-  "headSha": "0123456789abcdef0123456789abcdef01234567",
-  "decision": "clean",
-  "findings": []
-}
+{"schemaVersion":1,"attemptId":"<host UUID>","headSha":"<full reviewed SHA>","decision":"clean","findings":[]}
 ```
 
-`changes_requested` requires nonempty finding strings and blocks completion until
-fixes are pushed and a new reviewer succeeds. Contradictory clean/nonempty output,
-missing fields, extra fields, mismatched attempt/head, empty/missing/non-JSON
-output, failed execution and non-fresh provenance all fail closed. The host must
-provide the attempt ID and expected head to the reviewer and independently track
-both. The review policy is intentionally not an LLM-callable "record success" tool.
+`changes_requested` requires nonempty string findings. Unknown keys, missing or
+empty output, malformed/contradictory JSON, wrong attempt/goal, non-fresh context,
+and stale head SHA deny completion.
 
-Categories:
+## Independent completion audit
 
-- `review-failed`: execution/setup/runtime/interruption, absent/malformed/stale
-  verdict, or wrong goal/attempt/freshness.
-- `findings-unresolved`: valid changes-requested verdict.
-- `ci-blocked`: conflicts/unknown mergeability, missing/pending/non-passing checks,
-  or checks command failure. No-checks and skipping are not silently green.
-- `blocked`: unavailable host, metadata/transport errors, changed target/head,
-  or invalid persisted configuration.
-- `ready`: fresh successful execution, explicit clean current-head verdict,
-  unchanged required base, mergeable PR and all reported checks passing.
+`auditCompletion` reads current head/base/mergeability, evaluates the trusted
+reviewer execution and verdict, checks latest-head CI, then re-reads PR metadata.
+No missing, pending or failed checks are accepted; unknown/conflicting mergeability
+blocks completion. Head/base changes during the audit invalidate it. A clean
+review cannot replace CI, and green CI cannot replace reviewer success.
 
-The existing objective's additional duties (Codex thread inspection/direct replies,
-validation, Spanish comments, etc.) remain instructions, not programmatic checks
-implemented by this policy. This change does not claim otherwise.
+| Result | Meaning |
+| --- | --- |
+| `ready` | Fresh successful execution, explicit clean verdict, current head, green CI, mergeable |
+| `review-failed` | Missing/failed execution, invalid verdict, stale attempt/head or wrong provenance |
+| `findings-unresolved` | Valid changes-requested verdict; fix and run a new reviewer |
+| `ci-blocked` | Missing/pending/failing checks or unknown/conflicting mergeability |
+| `blocked` | Missing host/policy, malformed configuration, metadata failure or audit race |
 
-## Validation and limits
+Parent orchestration duties (Codex-thread inspection, evidence-based fixes,
+validation, commits/pushes, Spanish replies and comment formatting) remain explicit
+workflow instructions. This gate does **not** falsely claim to machine-verify every
+one of those duties or automatically merge a PR.
 
-Run `npm test` with Node supporting TypeScript stripping (Node 22.18+ or 24).
-Tests use Node's built-in test runner; no dependency or lockfile upgrades.
-They cover failed launch/runtime/interruption, missing/malformed verdict, stale
-head/attempt, clean review, unresolved findings, CI independence, audit races,
-unsupported/malformed companion, startup errors, and no generic goal overrides.
+## Adapter
 
-Adapter tests use a **mock proposed host**. They do not demonstrate enforcement
-inside the installed companion or prove its lifecycle behavior. Until the real
-companion work above ships and passes integration tests, the workflow is blocked
-and this work must not be described as full completion of the requested gate.
+On synchronous `pi-codex-goal:completion-policy-host:v1`, exactly one companion
+listener calls `provide(host)`. Late/duplicate providers and registration errors
+fail closed. `registerPolicy(id, audit, prepareReview)` supplies trusted callbacks;
+`startGoal({objective, policy})` returns an acknowledged goal ID. The companion
+owns reviewer launch, ledger capture, persistence and final completion. A shim
+that forwards policy-bearing requests to the objective-only event is not valid.
+
+## Validation
+
+- `npm test`: argument/adapter/evaluator regression tests, including CI/head races.
+- `PI_CODEX_GOAL_ROOT=/path/to/pi-codex-goal npm run test:integration`: real built
+  companion, registered tools, session persistence/restore, subprocess execution,
+  success/failure/empty/malformed/stale verdicts, superseded attempts and independent
+  CI/head checks. Parent-authored evidence is explicitly rejected.
+- The integration suite also runs the installed **real Pi CLI** and SDK transport
+  against a loopback OpenAI-compatible protocol fixture. It verifies fresh context,
+  read-only tools and successful completion without credentials, paid model calls,
+  or launching a real delegated review. Process fixtures cover adverse outcomes;
+  they are not described as successful real-model reviews.
+- The companion's `npm run verify` covers its real persistence/state boundary,
+  direct/manual/API paths, concurrent completion, abort/reload/replacement races,
+  policy failures and generic-goal regressions.
+
+No branch protection is changed or bypassed by these tests or this implementation.

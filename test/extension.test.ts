@@ -12,10 +12,11 @@ function harness(host?: any) {
   const notices: string[] = [];
   const starts: any[] = [];
   const policies = new Map<string, any>();
+  const prepares = new Map<string, any>();
   const execs: any[] = [];
   const adapter = host ?? {
     apiVersion: 1,
-    registerPolicy: (id: string, audit: any) => policies.set(id, audit),
+    registerPolicy: (id: string, audit: any, prepare: any) => { policies.set(id, audit); prepares.set(id, prepare); },
     startGoal: async (request: any) => { starts.push(request); return { ok: true, goalId: "goal-1" }; },
   };
   let enabled = true;
@@ -36,7 +37,7 @@ function harness(host?: any) {
   };
   extension(pi);
   const run = (args = "7 --base main") => commands.get("pr-review-goal").handler(args, { cwd: "/repo", ui: { notify: (s: string) => notices.push(s) } });
-  return { pi, run, commands, handlers, events, notices, starts, policies, execs, disable: () => { enabled = false; } };
+  return { pi, run, commands, handlers, events, notices, starts, policies, prepares, execs, disable: () => { enabled = false; } };
 }
 
 test("legacy objective-only companion blocks before any repo mutation or goal replacement", async () => {
@@ -53,7 +54,7 @@ test("generic goal tools/commands and lifecycle are not overridden", async () =>
   // In particular, no global tool_call block, goal state writes, or registration
   // of create_goal/update_goal/pause/resume/clear is introduced.
 });
-test("a proposed compatible adapter receives policy metadata, never objective-only dispatch", async () => {
+test("a compatible adapter receives policy metadata, never objective-only dispatch", async () => {
   const h = harness(); await h.run();
   assert.equal(h.starts.length, 1);
   assert.deepEqual(h.starts[0].policy, { id: POLICY_ID, config: { repoRoot: "/repo", prNumber: 7, baseBranch: "main" } });
@@ -87,6 +88,30 @@ test("missing guarded-start acknowledgment reports blocked", async () => {
   const h = harness({ apiVersion: 1, registerPolicy() {}, async startGoal() { return { ok: true }; } });
   await h.run(); assert.match(h.notices.join("\n"), /blocked:.*missing goal ID/);
 });
+for (const mode of ["clean", "wrong-checkout", "dirty", "changed-head", "wrong-base", "truncated"] as const) {
+  test(`trusted review preparation handles ${mode}`, async () => {
+    const h = harness(); await h.run();
+    let reads = 0;
+    h.pi.exec = async (program: string, args: string[]) => {
+      if (program === "gh" && args[1] === "view") return { code: 0, stdout: JSON.stringify({
+        baseRefName: mode === "wrong-base" ? "other" : "main",
+        headRefOid: mode === "changed-head" && reads++ > 0 ? "b".repeat(40) : "a".repeat(40),
+      }) };
+      if (program === "git" && args[0] === "rev-parse") return { code: 0, stdout: (mode === "wrong-checkout" ? "b" : "a").repeat(40) };
+      if (program === "git" && args[0] === "status") return { code: 0, stdout: mode === "dirty" ? " M file.ts" : "" };
+      return { code: 0, stdout: "trusted diff", truncated: mode === "truncated" };
+    };
+    const prepare = h.prepares.get(POLICY_ID);
+    const pending = prepare({ repoRoot: "/repo", prNumber: 7, baseBranch: "main" }, "host-attempt");
+    if (mode === "clean") {
+      const input = await pending;
+      assert.equal(input.headSha, "a".repeat(40));
+      assert.match(input.prompt, /host-attempt/);
+      assert.match(input.prompt, /trusted diff/);
+    } else await assert.rejects(pending);
+  });
+}
+
 test("argument contract preserved", () => {
   assert.deepEqual(parseArgs("7 --base main"), { prNumber: 7, baseBranch: "main" });
   assert.deepEqual(parseArgs("7"), { prNumber: 7, baseBranch: undefined });

@@ -6,12 +6,12 @@ import { POLICY_ID } from "../src/review-policy.ts";
 // - Run from inside the target git repo: /pr-review-goal <pr-number> [--base <branch>]
 // - Without --base, the PR must target exactly develop or dev (legacy behavior).
 // - With --base, the PR must target exactly the specified branch.
-// - Requires gh, pi-subagents, and pi-codex-goal.
+// - Requires gh and a completion-policy-aware pi-codex-goal.
 // - The command starts a Codex-style goal with no token budget; control it with
 //   /goal pause, /goal resume, or /goal clear.
 // Persistence and loop state stay inside pi-codex-goal. Starting requires a
-// completion-policy host, not just an objective-only event listener. The current
-// companion lacks that API: fail closed until it implements the documented contract.
+// completion-policy host, not just an objective-only event listener. Older
+// companions fail closed rather than silently dropping the protection.
 const USAGE = "Usage: /pr-review-goal <pr-number> [--base <branch>]";
 
 type PrReviewOptions = {
@@ -76,7 +76,7 @@ Contract:
 - The required PR target/base branch is exactly ${baseRefName}.
 - Preflight: base ${baseRefName}, head ${initialHeadRefOid}; before completion, confirm base is still exactly ${baseRefName} and use latest head SHA.
 - Use gh for PR operations, e.g. gh pr view ${prNumber}, gh pr checkout ${prNumber}, comments, pushes, and metadata.
-- Parent agent owns orchestration and loop decisions. Use pi-subagents with a fresh-context reviewer subagent each review round.
+- Parent agent owns orchestration and loop decisions. Run run_goal_review with the explicitly requested exact provider and model each review round. This host-owned, fresh-context, read-only reviewer is the only accepted execution evidence; ordinary subagent summaries or verdict files do not authorize completion.
 - The goal host must capture actual reviewer execution status separately from findings and CI. Setup/launch/runtime failures or interruptions are review-failed, never a clean review. Do not switch models or providers as a fallback.
 - Reviewer final output must be exactly one JSON object: {"schemaVersion":1,"attemptId":"<host attempt ID>","headSha":"<reviewed full SHA>","decision":"clean" or "changes_requested","findings":["required finding"]}. A clean verdict requires an empty findings array. Missing, empty, malformed, contradictory or stale verdicts block completion.
 - Inspect PR review comments/conversations from chatgpt-codex-connector/Codex if present via gh/gh api, including review threads and issue comments. Valid evidence-backed Codex concerns are required fixes.
@@ -95,7 +95,7 @@ Contract:
 - Repeat fresh review + Codex inspection -> fixes -> validation -> commit/push -> Spanish replies -> CI/conflict gate until no valid concern remains and latest-head CI is green.
 - If reviewer reports no valid change requests in the first round, state that zero fix rounds were needed; otherwise do not stop after one review/fix round.
 
-Do not call goal_complete until: latest fresh reviewer has no valid requests; Codex/chatgpt-codex-connector conversations were inspected and no valid concern remains unresolved; fixes are committed/pushed; comments use real Markdown newlines via --body-file with no literal \\n; Spanish replies were posted directly on original Codex/chatgpt-codex-connector comments/threads for addressed valid concerns; conflicts are resolved/pushed, especially if no checks appeared; PR still targets exactly ${baseRefName}; latest-head CI/checks are green with no bad/pending/queued/in_progress; validation evidence was checked.`;
+Do not call update_goal(status: complete) until: latest fresh reviewer has no valid requests; Codex/chatgpt-codex-connector conversations were inspected and no valid concern remains unresolved; fixes are committed/pushed; comments use real Markdown newlines via --body-file with no literal \\n; Spanish replies were posted directly on original Codex/chatgpt-codex-connector comments/threads for addressed valid concerns; conflicts are resolved/pushed, especially if no checks appeared; PR still targets exactly ${baseRefName}; latest-head CI/checks are green with no bad/pending/queued/in_progress; validation evidence was checked.`;
 
   if (objective.length > 8000) {
     throw new Error("Generated /goal objective exceeds 8000 characters.");

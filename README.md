@@ -16,7 +16,9 @@ pi install git:github.com/matifuentes2/pi-pr-review-goal
 
 Starts a Codex-style PR review/fix/comment loop for a GitHub PR **only with a completion-policy-capable `pi-codex-goal` host**.
 
-> **Currently blocked:** the inspected companion exposes only an objective-text start event, not an enforceable completion-policy API. This version refuses to start or replace a goal through that unsafe API. The policy evaluator and proposed adapter are implemented here, but the required companion completion-boundary and trusted reviewer-execution integration are not. See [the concrete blocker, proposed contract, and test limitations](docs/completion-policy.md). This is not an end-to-end reviewer-success gate release.
+Install the matching policy-aware `pi-codex-goal` revision from `companion-ref.json` and use Pi 1.5+. Older objective-only companions fail closed without replacing your current goal. See [the completion boundary, trust model, and integration tests](docs/completion-policy.md).
+
+Each round uses `run_goal_review({ provider, model })` with the exact explicitly selected provider/model. The companion launches a fresh read-only reviewer and captures its real execution and final verdict; parent-written summaries cannot authorize completion. Setup/runtime failure pauses the goal without model fallback. Completion independently requires a fresh clean verdict, current PR head/base, passing CI and mergeability.
 
 - Without `--base`, the PR must target `develop` or `dev` (backward-compatible default).
 - With `--base <branch>` (or `-b <branch>` / `--base=<branch>`), the PR must target that branch exactly.
@@ -29,7 +31,7 @@ Example:
 
 ## Validation
 
-Run `npm test` on Node 22.18+ or 24. Tests use the built-in test runner and no added dependencies. Mock adapter tests do not establish enforcement in the real companion.
+Run `npm test` on Node 24. To test the real built companion, run its `npm ci --ignore-scripts && npm run build`, then `PI_CODEX_GOAL_ROOT=/path/to/pi-codex-goal npm run test:integration`. The latter includes real Pi CLI execution against a local protocol fixture; it needs Pi 1.5+ on PATH but no model credentials. CI runs both suites against the exact pinned companion commit.
 
 ## Operational safety
 
