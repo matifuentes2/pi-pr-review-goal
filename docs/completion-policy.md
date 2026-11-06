@@ -92,16 +92,32 @@ and stale head SHA deny completion.
 
 `auditCompletion` reads current head/base/mergeability, evaluates the trusted
 reviewer execution and verdict, checks latest-head CI, then re-reads PR metadata.
-No missing, pending or failed checks are accepted; unknown/conflicting mergeability
-blocks completion. Head/base changes during the audit invalidate it. A clean
-review cannot replace CI, and green CI cannot replace reviewer success.
+Reported `SUCCESS`/`NEUTRAL` checks must have bucket `pass`; job-level `SKIPPED`
+conclusions must have bucket `skipping`. These are GitHub's nonblocking conclusions
+([GitHub status-check semantics](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks)).
+The policy additionally requires at least one passing check: absent or entirely
+skipped CI cannot establish validation. Thus 22 passing + 11 skipped jobs is green,
+not `ci-blocked`.
+
+Every row is checked: a skipped dependent job cannot hide a failed or pending
+prerequisite. Failure, cancellation, timeout, action-required, pending/queued/running,
+unknown conclusions, inconsistent state/bucket pairs, malformed data, CLI errors,
+and killed/truncated results block completion. Diagnostics name blocking checks;
+all-skipped CI has a distinct explanation. A skipped *workflow* whose required
+check remains pending is still blocked. Repository branch protection remains the
+authority for required-check definitions and remote merge eligibility; this audit
+examines reported latest-head checks and does not bypass protection.
+
+Unknown/conflicting mergeability blocks completion. Head/base changes during the
+audit invalidate it, including when CI contains skipped jobs. A clean review cannot
+replace CI, and green CI cannot replace reviewer success.
 
 | Result | Meaning |
 | --- | --- |
 | `ready` | Fresh successful execution, explicit clean verdict, current head, green CI, mergeable |
 | `review-failed` | Missing/failed execution, invalid verdict, stale attempt/head or wrong provenance |
 | `findings-unresolved` | Valid changes-requested verdict; fix and run a new reviewer |
-| `ci-blocked` | Missing/pending/failing checks or unknown/conflicting mergeability |
+| `ci-blocked` | Absent/all-skipped, pending/failing/cancelled/unknown/malformed CI or unknown/conflicting mergeability |
 | `blocked` | Missing host/policy, malformed configuration, metadata failure or audit race |
 
 Parent orchestration duties (Codex-thread inspection, evidence-based fixes,
@@ -122,7 +138,9 @@ that forwards policy-bearing requests to the objective-only event is not valid.
 
 ## Validation
 
-- `npm test`: argument/adapter/evaluator regression tests, including CI/head races.
+- `npm test`: argument/adapter/evaluator regressions, including 22-pass/11-skip CI,
+  neutral checks, nonblocking conclusions versus malformed state/bucket pairs,
+  prerequisite failures/pending/cancellation, absent/all-skipped CI, and CI/head races.
 - `PI_CODEX_GOAL_ROOT=/path/to/pi-codex-goal npm run test:integration`: real built
   companion, registered tools, session persistence/restore, subprocess execution,
   success/failure/empty/malformed/stale verdicts, superseded attempts and independent

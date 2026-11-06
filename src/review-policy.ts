@@ -65,6 +65,35 @@ export type Exec = (command: string, args: string[], cwd: string) => Promise<{
   code?: number | null; stdout?: string; killed?: boolean; truncated?: boolean;
 }>;
 
+// GitHub accepts SUCCESS, NEUTRAL and job-level SKIPPED conclusions. A skipped
+// dependent job must not hide its failing/pending prerequisite: inspect every row
+// and require at least one passing check, rather than accepting all-skipped CI.
+// Keep the state/bucket pairs strict so malformed or contradictory data fails closed.
+function evaluateChecks(rows: unknown): GateResult {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return reject("ci-blocked", "Latest-head CI has no checks or malformed check data.");
+  }
+  let passing = 0;
+  let skipped = 0;
+  const blockers: string[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row) || typeof row.name !== "string" || !row.name.trim()) {
+      blockers.push("malformed check");
+    } else if (row.bucket === "pass" && (row.state === "SUCCESS" || row.state === "NEUTRAL")) {
+      passing++;
+    } else if (row.bucket === "skipping" && row.state === "SKIPPED") {
+      skipped++;
+    } else {
+      blockers.push(`${JSON.stringify(row.name.slice(0, 80))} (state=${JSON.stringify(row.state)}, bucket=${JSON.stringify(row.bucket)})`);
+    }
+  }
+  if (blockers.length) {
+    return reject("ci-blocked", `Latest-head CI has ${blockers.length} blocking or malformed check(s): ${blockers.slice(0, 5).join("; ")}.`);
+  }
+  if (passing === 0) return reject("ci-blocked", "Latest-head CI has only skipped checks; at least one passing check is required.");
+  return { ok: true, status: "ready", reason: `Latest-head CI: ${passing} passing, ${skipped} skipped.` };
+}
+
 // CI is a separate gate: success cannot substitute for execution or verdict.
 export async function auditCompletion(config: PolicyConfig, evidence: CompletionEvidence, exec: Exec): Promise<GateResult> {
   try {
@@ -79,17 +108,23 @@ export async function auditCompletion(config: PolicyConfig, evidence: Completion
     if (!review.ok) return review;
     if (before.mergeable !== "MERGEABLE") return reject("ci-blocked", "PR has conflicts or unknown mergeability.");
     const checks = await exec("gh", ["pr", "checks", String(config.prNumber), "--json", "name,state,bucket,link"], config.repoRoot);
-    if (checks.code !== 0 || checks.killed || checks.truncated) return reject("ci-blocked", "Unable to confirm green latest-head CI.");
-    const rows: unknown = JSON.parse(checks.stdout || "");
-    if (!Array.isArray(rows) || rows.length === 0 || !rows.every(r => r && typeof r.name === "string" && r.bucket === "pass")) {
-      return reject("ci-blocked", "Latest-head CI is missing, malformed, pending, or not all passing.");
+    // gh uses 1 for failed checks and 8 for pending checks. Inspect their rows for
+    // actionable diagnostics, but never accept a nonzero exit even if rows look green.
+    if (checks.killed || checks.truncated || ![0, 1, 8].includes(checks.code ?? -1)) {
+      return reject("ci-blocked", "Unable to confirm green latest-head CI.");
     }
+    let rows: unknown;
+    try { rows = JSON.parse(checks.stdout || ""); }
+    catch { return reject("ci-blocked", "Unable to parse latest-head CI checks."); }
+    const ci = evaluateChecks(rows);
+    if (!ci.ok) return ci;
+    if (checks.code !== 0) return reject("ci-blocked", `GitHub CLI reported unsuccessful CI (exit ${checks.code}) despite nonblocking-looking checks.`);
     const after = await metadata();
     if (after.headRefOid !== before.headRefOid || after.baseRefName !== config.baseBranch) {
       return reject("blocked", "PR head or base changed during completion audit; re-review current head.");
     }
     if (after.mergeable !== "MERGEABLE") return reject("ci-blocked", "PR mergeability changed during audit.");
-    return review;
+    return { ...review, reason: `${review.reason} ${ci.reason}` };
   } catch (error) {
     return reject("blocked", `Completion audit failed: ${error instanceof Error ? error.message : String(error)}`);
   }

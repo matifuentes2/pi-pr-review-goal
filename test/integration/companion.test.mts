@@ -54,11 +54,12 @@ async function setup(t: any) {
   h.ctx.ui.notify = (text: string) => notices.push(text);
   let currentHead = head;
   let checks = [{ name: "test", bucket: "pass", state: "SUCCESS" }];
+  let checksCode = 0;
   h.pi.exec = async (program: string, args: string[]) => {
     let stdout = "";
     if (program === "git" && args[0] === "rev-parse") stdout = args[1] === "HEAD" ? currentHead : "/repo";
     if (program === "gh" && args[0] === "pr" && args[1] === "view") stdout = JSON.stringify({ baseRefName: "main", headRefOid: currentHead, mergeable: "MERGEABLE" });
-    if (program === "gh" && args[1] === "checks") stdout = JSON.stringify(checks);
+    if (program === "gh" && args[1] === "checks") return { code: checksCode, stdout: JSON.stringify(checks), stderr: "", killed: false };
     if (program === "gh" && args[1] === "diff") stdout = "diff --git a/file.ts b/file.ts\n+export const ok = true;";
     return { code: 0, stdout, stderr: "", killed: false };
   };
@@ -68,7 +69,9 @@ async function setup(t: any) {
   await h.emit("session_start", { type: "session_start", reason: "startup" });
   await command.handler("7 --base main", h.ctx);
   assert.equal(h.snapshot().goal?.status, "active", notices.join("\n"));
-  return { h, notices, actualPath: previousPath, changeHead: () => { currentHead = "b".repeat(40); }, failCI: () => { checks = [{ name: "test", bucket: "fail", state: "FAILURE" }]; } };
+  return { h, notices, actualPath: previousPath, changeHead: () => { currentHead = "b".repeat(40); },
+    setChecks: (next: typeof checks, code = 0) => { checks = next; checksCode = code; },
+    failCI: () => { checks = [{ name: "test", bucket: "fail", state: "FAILURE" }]; } };
 }
 const options = { skip: process.platform === "win32" ? "POSIX fixture executable; native subprocess transport is tested in companion suite." : false };
 
@@ -148,10 +151,58 @@ test("latest PR head and CI remain independent completion requirements", options
   assert.notEqual(h.snapshot().goal.status, "complete");
 });
 
+const mixedChecks = [
+  ...Array.from({ length: 22 }, (_, i) => ({ name: `passing-${i}`, state: "SUCCESS", bucket: "pass" })),
+  ...Array.from({ length: 11 }, (_, i) => ({ name: `conditional-${i}`, state: "SKIPPED", bucket: "skipping" })),
+];
+test("default command completes with 22 passing and 11 skipped checks after restore", options, async t => {
+  const { h, setChecks } = await setup(t);
+  setChecks(mixedChecks);
+  await h.runTool("run_goal_review", {});
+  const evidence = h.snapshot().goal.reviewExecution;
+  await h.reloadSession("resume"); reviewExtension(h.pi);
+  await h.emit("session_start", { type: "session_start", reason: "resume" });
+  await h.runTool("update_goal", { status: "complete" });
+  assert.equal(h.snapshot().goal.status, "complete");
+  assert.deepEqual(h.snapshot().goal.reviewExecution, evidence);
+});
+for (const blocking of [
+  { name: "prerequisite", state: "FAILURE", bucket: "fail" },
+  { name: "prerequisite", state: "PENDING", bucket: "pending" },
+  { name: "prerequisite", state: "CANCELLED", bucket: "cancel" },
+]) {
+  test(`mixed CI keeps ${blocking.state} blocked, then recovers without replacing the review`, options, async t => {
+    const { h, setChecks } = await setup(t);
+    await h.runTool("run_goal_review", {});
+    const evidence = h.snapshot().goal.reviewExecution;
+    setChecks([...mixedChecks, blocking], blocking.bucket === "pending" ? 8 : 1);
+    await assert.rejects(h.runTool("update_goal", { status: "complete" }), /ci-blocked.*prerequisite/);
+    assert.notEqual(h.snapshot().goal.status, "complete");
+    await h.runTool("pause_goal", {});
+    assert.equal(h.snapshot().goal.status, "paused");
+    await h.reloadSession("resume"); reviewExtension(h.pi);
+    await h.emit("session_start", { type: "session_start", reason: "resume" });
+    setChecks(mixedChecks);
+    await h.runTool("update_goal", { status: "complete" });
+    assert.equal(h.snapshot().goal.status, "complete");
+    assert.deepEqual(h.snapshot().goal.reviewExecution, evidence);
+  });
+}
+test("even a successful fresh reviewer cannot complete with entirely skipped or absent CI", options, async t => {
+  const { h, setChecks } = await setup(t);
+  await h.runTool("run_goal_review", {});
+  for (const checks of [mixedChecks.filter(row => row.state === "SKIPPED"), []]) {
+    setChecks(checks);
+    await assert.rejects(h.runTool("update_goal", { status: "complete" }), /ci-blocked/);
+    assert.notEqual(h.snapshot().goal.status, "complete");
+  }
+});
+
 // Real Pi CLI and real SDK transport against a loopback model protocol fixture.
 // No paid/external model, account credentials, or delegated review is used.
-test("installed Pi CLI runs isolated review end-to-end against local model fixture", options, async t => {
-  const { h, actualPath } = await setup(t);
+test("installed Pi CLI runs isolated review and completes with passing/skipped CI against local model fixture", options, async t => {
+  const { h, actualPath, setChecks } = await setup(t);
+  setChecks(mixedChecks);
   process.env.PATH = actualPath;
   const agentDir = await mkdtemp(join(tmpdir(), "review-goal-cli-agent-"));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
