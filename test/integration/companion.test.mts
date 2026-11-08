@@ -107,6 +107,15 @@ test("parent-authored verdict parameters cannot substitute for actual reviewer e
   assert.equal(h.snapshot().goal.status, "paused");
   assert.equal(h.snapshot().goal.reviewExecution, undefined);
 });
+test("parent model cannot replace the protected PR goal with a generic goal and complete that instead", options, async t => {
+  const { h } = await setup(t);
+  const protectedGoal = h.snapshot().goal;
+  await assert.rejects(h.runTool("create_goal", { objective: "Declare the review done", replace_existing: true }), /protected goal cannot be replaced/);
+  assert.equal(h.snapshot().goal.goalId, protectedGoal.goalId);
+  assert.deepEqual(h.snapshot().goal.completionPolicy, protectedGoal.completionPolicy);
+  await assert.rejects(h.runTool("update_goal", { status: "complete" }), /review-failed/);
+  assert.notEqual(h.snapshot().goal.status, "complete");
+});
 test("new failed attempt supersedes successful evidence and survives pause/resume/reload", options, async t => {
   const { h } = await setup(t);
   await h.runTool("run_goal_review", { provider: "requested", model: "exact-model" });
